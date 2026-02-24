@@ -4,7 +4,21 @@ This is a Docker Compose **development/testing** environment for [latr](https://
 
 By default, it configures `latr` in daemon mode with a Vault backend to store your Linode API tokens. 
 
-You can optionally run an Observability stack alongside it to view logs, traces and metrics via Grafana. 
+You can optionally run an Observability stack alongside it to view logs, traces and metrics via Grafana.
+
+## Table of Contents
+
+- [Files](#files)
+- [Note about Linode API Scopes](#note-about-linode-api-scopes)
+- [Multiple Linode Accounts](#multiple-linode-accounts)
+- [Quick Start](#quick-start)
+- [What Happens on `docker compose up`](#what-happens-on-docker-compose-up)
+- [Vault Access](#vault-access)
+- [Observability (Optional)](#observability-optional)
+- [Persistence](#persistence)
+- [Picking up changes to `latr-configs/*`](#picking-up-changes-to-latr-configs)
+- [`revoke-tokens.py`](#revoke-tokenspy)
+- [Security Notes](#security-notes)
 
 ## Files
 
