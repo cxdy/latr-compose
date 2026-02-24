@@ -46,10 +46,10 @@ services:
     restart: "no"
     environment:
       VAULT_ADDR: "http://vault:8200"
-      BOOTSTRAP_LINODE_TOKEN: "${LINODE_TOKEN:-}"
     volumes:
       - ./vault-creds:/vault-creds
-      - ./config.yaml:/config/config.yaml:ro
+      - ./latr-configs:/config/templates:ro
+      - ./.env:/run/secrets/env-file:ro
       - latr-config:/config/rendered
     entrypoint: /bin/sh
     command:
@@ -59,7 +59,6 @@ services:
         apk add --no-cache jq > /dev/null 2>&1
 
         INIT_FILE="/vault-creds/vault-init.json"
-        CREDS_FILE="/vault-creds/latr.env"
 
         # -------------------------------------------------------
         #  First run: initialize Vault and persist unseal keys
@@ -134,41 +133,59 @@ services:
           echo "==> AppRole auth already enabled."
         fi
 
-        # Create/update the latr role
-        echo "==> Configuring latr AppRole"
-        vault write auth/approle/role/latr \
-          token_policies="latr-policy" \
-          token_ttl=1h \
-          token_max_ttl=4h \
-          secret_id_ttl=0
-
         # -------------------------------------------------------
-        #  Fetch Role ID (stable) and generate Secret ID
+        #  Per-config: AppRole + credentials + token file + render
         # -------------------------------------------------------
-        ROLE_ID=$$(vault read -field=role_id auth/approle/role/latr/role-id)
-        SECRET_ID=$$(vault write -field=secret_id -f auth/approle/role/latr/secret-id)
+        for TEMPLATE in /config/templates/*.yaml; do
+          [ -f "$$TEMPLATE" ] || continue
+          FILENAME=$$(basename "$$TEMPLATE")
+          NAME="$${FILENAME%.yaml}"
+          NAME_UPPER=$$(echo "$$NAME" | tr 'a-z-' 'A-Z_')
+          ROLE_NAME="latr-$${NAME}"
 
-        printf "VAULT_ROLE_ID=%s\nVAULT_SECRET_ID=%s\n" "$$ROLE_ID" "$$SECRET_ID" > "$$CREDS_FILE"
+          echo ""
+          echo "==> Processing config: $$NAME"
 
-        # Write LINODE_TOKEN to a file latr can consume
-        printf "LINODE_TOKEN=%s\n" "$$BOOTSTRAP_LINODE_TOKEN" > /vault-creds/linode.env
+          # Create/update the per-config AppRole
+          vault write "auth/approle/role/$${ROLE_NAME}" \
+            token_policies="latr-policy" \
+            token_ttl=1h \
+            token_max_ttl=4h \
+            secret_id_ttl=0
 
-        # -------------------------------------------------------
-        #  Template the latr config with actual credentials
-        # -------------------------------------------------------
-        echo "==> Rendering latr config with AppRole credentials"
-        sed -e "s|\$${VAULT_ROLE_ID}|$$ROLE_ID|g" \
-            -e "s|\$${VAULT_SECRET_ID}|$$SECRET_ID|g" \
-            /config/config.yaml > /config/rendered/config.yaml
+          # Fetch Role ID (stable) and generate Secret ID
+          ROLE_ID=$$(vault read -field=role_id "auth/approle/role/$${ROLE_NAME}/role-id")
+          SECRET_ID=$$(vault write -field=secret_id -f "auth/approle/role/$${ROLE_NAME}/secret-id")
+
+          # Write vault creds file (for reference)
+          printf "VAULT_ROLE_ID=%s\nVAULT_SECRET_ID=%s\n" "$$ROLE_ID" "$$SECRET_ID" \
+            > "/vault-creds/$${NAME}.env"
+
+          # Extract the matching LINODE_TOKEN from the mounted .env file
+          ENV_VAR_NAME="LINODE_TOKEN_$${NAME_UPPER}"
+          TOKEN_VALUE=""
+          if [ -f /run/secrets/env-file ]; then
+            TOKEN_VALUE=$$(grep "^$${ENV_VAR_NAME}=" /run/secrets/env-file | cut -d= -f2- | tr -d '\r')
+          fi
+          if [ -z "$$TOKEN_VALUE" ]; then
+            echo "    WARNING: No $${ENV_VAR_NAME} found in .env — latr will fail for this config"
+          fi
+          printf "LINODE_TOKEN=%s\n" "$$TOKEN_VALUE" > "/vault-creds/$${NAME}.linode.env"
+
+          # Template the config with actual AppRole credentials
+          sed -e "s|\$${VAULT_ROLE_ID}|$$ROLE_ID|g" \
+              -e "s|\$${VAULT_SECRET_ID}|$$SECRET_ID|g" \
+              "$$TEMPLATE" > "/config/rendered/$${NAME}.yaml"
+
+          echo "    AppRole: $${ROLE_NAME}  |  Role ID: $$ROLE_ID"
+        done
 
         echo ""
         echo "============================================"
         echo " Vault initialization complete!"
         echo "============================================"
-        echo " Root Token:   $$ROOT_TOKEN"
-        echo " Vault UI:     http://localhost:8200"
-        echo " Role ID:      $$ROLE_ID"
-        echo " Secret ID:    $$SECRET_ID"
+        echo " Root Token: $$ROOT_TOKEN"
+        echo " Vault UI:   http://localhost:8200"
         echo "============================================"
 
   latr:
@@ -192,9 +209,29 @@ services:
     entrypoint: ["/bin/sh", "-c"]
     command:
       - |
-        . /vault-creds/linode.env
-        export LINODE_TOKEN
-        exec /usr/local/bin/latr -config /config/config.yaml
+        PIDS=""
+        for CONFIG in /config/*.yaml; do
+          [ -f "$$CONFIG" ] || continue
+          NAME=$$(basename "$$CONFIG" .yaml)
+          TOKENFILE="/vault-creds/$${NAME}.linode.env"
+          if [ ! -f "$$TOKENFILE" ]; then
+            echo "ERROR: No token file $$TOKENFILE for config $$NAME"
+            continue
+          fi
+          (
+            . "$$TOKENFILE"
+            export LINODE_TOKEN
+            export OTEL_RESOURCE_ATTRIBUTES="config=$${NAME}.yaml"
+            echo "==> Starting latr for config: $$NAME (pid $$$$)"
+            exec /usr/local/bin/latr -config "$$CONFIG"
+          ) &
+          PIDS="$$PIDS $$!"
+        done
+        RESULT=0
+        for PID in $$PIDS; do
+          wait $$PID || RESULT=1
+        done
+        exit $$RESULT
 
   # -----------------------------------------------------------
   #  Observability Stack (opt-in via --profile observability)

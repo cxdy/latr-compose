@@ -13,7 +13,9 @@ You can optionally run an Observability stack alongside it to view logs, traces 
 | `docker-compose.yaml` | Core stack (Vault, vault-init, latr) plus the optional observability profile (OTel Collector, Prometheus, Loki, Tempo, Grafana, grafana-init) |
 | `Dockerfile.latr` | Lightweight Alpine wrapper around the official latr image (adds a shell so env vars can be sourced at runtime) |
 | `vault-config.hcl` | Vault server configuration with file storage backend |
-| `config.yaml` | latr configuration — edit the `tokens` section to match your needs |
+| `latr-configs/` | latr config templates — one YAML file per Linode account (see [Multiple Accounts](#multiple-linode-accounts)) |
+| `.env` | Linode API tokens, one `LINODE_TOKEN_<NAME>=...` per config (git-ignored) |
+| `.env.example` | Reference showing the token naming convention |
 
 ### `vault-creds/`
 
@@ -22,8 +24,8 @@ Created on first run. **Keep this directory in `.gitignore`.**
 | File | Description |
 |------|-------------|
 | `vault-init.json` | Unseal keys and root token |
-| `latr.env` | AppRole credentials (for reference) |
-| `linode.env` | Resolved `LINODE_TOKEN` sourced by latr at startup |
+| `<name>.env` | Per-config AppRole credentials (for reference) |
+| `<name>.linode.env` | Per-config `LINODE_TOKEN` sourced by latr at startup |
 
 ### `observability/`
 
@@ -57,16 +59,39 @@ If you see a log like this in your `latr` logs, you'll know that you have incorr
 {"time":"2026-02-24T02:55:53.532721342Z","level":"ERROR","source":{"function":"github.com/wbh1/latr/internal/scheduler.(*Scheduler).executeCycle","file":"/home/runner/work/latr/latr/internal/scheduler/scheduler.go","line":124},"msg":"Failed to process token","token_label":"token-one","error":"failed to create token token-one in Linode: failed to create token: [400] [scopes] You may not create a token with scopes greater than those of the token you are using for the request (maximum scopes: account:read_write)"}
 ```
 
+## Multiple Linode Accounts
+
+Each config file in `latr-configs/` represents a separate Linode account. The naming convention ties everything together:
+
+| Config file | Token env var in `.env` | Vault AppRole |
+|---|---|---|
+| `latr-configs/primary.yaml` | `LINODE_TOKEN_PRIMARY` | `latr-primary` |
+| `latr-configs/secondary.yaml` | `LINODE_TOKEN_SECONDARY` | `latr-secondary` |
+
+To add a new account:
+1. Copy an existing config: `cp latr-configs/primary.yaml latr-configs/newaccount.yaml`
+2. Edit the new config with your token definitions
+3. Add `LINODE_TOKEN_NEWACCOUNT=your-token` to `.env`
+4. `docker compose up -d` (vault-init will create the new AppRole and render the config)
+
+To remove an account: delete the config file, remove the token from `.env`, and redeploy.
+
 ## Quick Start
 
 ```bash
-# 1. Create the vault-creds directory
+# 1. Create required directories
 mkdir -p vault-creds
 
-# 2. Set your Linode API token
-export LINODE_TOKEN="your-linode-api-token"
+# 2. Create your config(s) in latr-configs/ (OPTIONAL)
+#    Each file gets its own Vault AppRole and Linode token.
+#    Use latr-configs/primary.yaml as a starting point.
+cp latr-configs/primary.yaml latr-configs/myaccount.yaml
+# Edit myaccount.yaml with your token definitions
 
-# 3. Edit config.yaml with your token definitions
+# 3. Create .env with a LINODE_TOKEN_<NAME> for each config
+#    <NAME> = filename without .yaml, UPPERCASED, hyphens → underscores
+cp .env.example .env
+# Edit .env with your actual Linode API tokens
 
 # 4. Bring everything up
 docker compose up -d
@@ -74,7 +99,7 @@ docker compose up -d
 # 5. Check that vault-init completed successfully
 docker compose logs vault-init
 
-# 6. Verify latr is running
+# 6. Verify latr is running (one process per config)
 docker compose logs -f latr
 ```
 
@@ -86,11 +111,13 @@ docker compose logs -f latr
    - **Every run**: Unseals Vault if sealed, then idempotently configures:
      - KV v2 secrets engine at `infra/`
      - A policy granting full CRUD access to `infra/*`
-     - AppRole auth with a `latr` role
-   - Writes the generated `VAULT_ROLE_ID` and `VAULT_SECRET_ID` to `./vault-creds/latr.env` (for reference)
-   - Renders a copy of `config.yaml` with the actual AppRole credentials baked in (replacing `${VAULT_ROLE_ID}` and `${VAULT_SECRET_ID}` placeholders)
-   - Writes `LINODE_TOKEN` from the bootstrap env var to `vault-creds/linode.env`
-3. **latr** starts after vault-init completes, sources `LINODE_TOKEN` from `vault-creds/linode.env`, reads the rendered config, and runs in daemon mode
+     - AppRole auth method
+   - **For each config** in `latr-configs/`:
+     - Creates a per-config AppRole (`latr-<name>`)
+     - Writes `vault-creds/<name>.env` with AppRole credentials (for reference)
+     - Reads `LINODE_TOKEN_<NAME>` from `.env` and writes it to `vault-creds/<name>.linode.env`
+     - Renders the config template with AppRole credentials baked in
+3. **latr** starts after vault-init completes, launches one process per rendered config — each with its own `LINODE_TOKEN` and a `config` OTEL resource attribute (e.g. `config="primary.yaml"`) — and runs in daemon mode
 
 ## Vault Access
 
@@ -152,7 +179,7 @@ latr ──OTLP──▶ OTel Collector ──▶ Prometheus (metrics)
 Docker logs ─filelog─┘        Grafana ◀──┘
 ```
 
-The `otel_endpoint` in `config.yaml` is set to `otel-collector:4317`. If the observability stack isn't running, latr will log connection errors but continue to function normally.
+The `otel_endpoint` in each config is set to `otel-collector:4317`. If the observability stack isn't running, latr will log connection errors but continue to function normally.
 
 ## Persistence
 
@@ -163,9 +190,69 @@ docker compose down -v   # -v removes the vault-data and latr-config volumes
 rm -rf vault-creds       # remove saved unseal keys and creds
 ```
 
+## Picking up changes to `latr-configs/*`
+
+The configs need to be rendered by `vault-init`, so after modifying/creating/deleting anything in `latr-configs/*`, you'll need re-run `vault-init` and start `latr` with the updated configs.
+```bash
+docker compose rm -sf vault-init latr && docker compose up -d
+```
+
+## `revoke-tokens.py`
+
+Quick and dirty utility script to revoke tokens for testing purposes. Rotating/revoking tokens quickly is a good way to generate observability data in a short period of time.
+
+This script reads your `.env` for your `LINODE_TOKEN`(s) and your `latr-configs/*.yaml` files for tokens associated with each `LINODE_TOKEN` from `.env`, then revokes those tokens.
+
+Obviously be careful with this.. Don't run this with production credentials (unless you know what you're doing). 
+
+### Usage
+```bash
+# Install dependencies
+➜ pip3 install requests pyyaml
+
+# Dry-run
+➜ python3 revoke-tokens.py
+
+--- primary.yaml (token: ...REDACTED)
+  token-one: would revoke (id REDACTED, created 2026-02-24T07:29:12, expires 2026-03-26T07:29:12)
+
+--- secondary.yaml (token: ...REDACTED)
+  token-four: would revoke (id REDACTED, created 2026-02-24T07:29:12, expires 2026-03-26T07:29:12)
+
+Run again with a --do-it flag to revoke the tokens for real.
+
+# Actually revoke the tokens
+➜ python3 revoke-tokens.py --do-it
+
+--- primary.yaml (token: ...REDACTED)
+  token-one: revoked (id REDACTED, created 2026-02-24T07:29:12, expires 2026-03-26T07:29:12)
+
+--- secondary.yaml (token: ...REDACTED)
+  token-four: revoked (id REDACTED, created 2026-02-24T07:29:12, expires 2026-03-26T07:29:12)
+```
+
+### Speed-run
+
+If you want to simulate lots of rotations quickly, I recommend the following settings in your `latr-configs/$config.yaml`:
+```yaml
+daemon:
+  check_interval: "1m"
+rotation:
+  threshold_percent: 99
+tokens:
+  - label: "test-token"
+    validity: "30d"
+```
+Then run a loop!
+```bash
+➜ while true; do python3 revoke-tokens.py --do-it; sleep 75; done
+```
+
+May need to tweak timing a little :shrug:
+
 ## Security Notes
 
-- `vault-creds/` contains your unseal keys, root token, and AppRole secrets, as well as your LINODE_TOKEN. Keep it in `.gitignore`.
+- `.env` contains your Linode API tokens and `vault-creds/` contains your unseal keys, root token, and AppRole secrets. Both are in `.gitignore`.
 - TLS is disabled on Vault. If you're crazy enough to run this in production, enable TLS.
 - The init uses a single unseal key (key-shares=1, key-threshold=1) for simplicity. For production, increase these values.
 - Do not run this as-is in production. You're an idiot if you trust me.

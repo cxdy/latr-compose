@@ -19,30 +19,30 @@ vault:
 # Observability settings
 observability:
   otel_endpoint: "otel-collector:4317" # OpenTelemetry collector endpoint (optional)
-  log_level: "info" # debug, info, warn, error
+  log_level: "debug" # debug, info, warn, error
 
 # Token definitions
 tokens:
-  - label: "token-one" # Must match the token's label in Cloud Manager/API
+  - label: "token-four" # Must match the token's label in Cloud Manager/API
     team: "me"
     validity: "30d" # Must be <= 6 months (180d)
     scopes: "monitor:read_only" # "*" for all scopes, or comma-separated list
     storage:
       - type: "vault"
-        path: "infra/data/linode/token-one"
+        path: "latr/secondary/token-four"
 
-  - label: "token-two"
+  - label: "token-five"
     team: "me"
     validity: "30d"
     scopes: "nodebalancers:read_only"
     storage:
       - type: "vault"
-        path: "infra/data/linode/token-two"
+        path: "latr/secondary/token-five"
 
-  - label: "token-three"
+  - label: "token-six"
     team: "me"
     validity: "30d"
     scopes: "*"
     storage:
       - type: "vault"
-        path: "infra/data/linode/token-three"
+        path: "latr/secondary/token-six"
