@@ -4,10 +4,10 @@ A full observability stack is available via Docker Compose profiles. This adds a
 
 ```bash
 # Start everything including observability
-docker compose --profile observability up -d
+➜ docker compose --profile observability up -d
 
 # Or start just the core stack (no observability)
-docker compose up -d
+➜ docker compose up -d
 ```
 
 ## What's Included
@@ -33,14 +33,14 @@ reflected in `latr.json` unless you export the JSON model and update the file yo
 To reset the Grafana container:
 ```bash
 # Remove the containers
-docker compose --profile observability rm -sf grafana grafana-init
+➜ docker compose --profile observability rm -sf grafana grafana-init
 
 # Remove the grafana-data volume
-docker volume rm latr-docker_grafana-data
+➜ docker volume rm latr-docker_grafana-data
 
 # Rebuild it with a fresh volume
 # datasources and dashboard still included
-docker compose --profile observability up -d
+➜ docker compose --profile observability up -d
 ```
 
 ## Architecture

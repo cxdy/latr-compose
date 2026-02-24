@@ -19,7 +19,7 @@
   "editable": true,
   "fiscalYearStartMonth": 0,
   "graphTooltip": 1,
-  "id": 3,
+  "id": 5,
   "links": [],
   "panels": [
     {
@@ -78,14 +78,14 @@
           "values": false
         },
         "showPercentChange": false,
-        "textMode": "value",
+        "textMode": "value_and_name",
         "wideLayout": true
       },
       "pluginVersion": "11.6.5",
       "targets": [
         {
           "expr": "latr_tokens_total",
-          "legendFormat": "",
+          "legendFormat": "{{config}}",
           "refId": "A"
         }
       ],
@@ -820,58 +820,261 @@
       },
       "id": 104,
       "panels": [],
-      "title": "Logs & Traces",
+      "title": "Traces",
       "type": "row"
-    },
-    {
-      "datasource": {
-        "type": "loki",
-        "uid": "loki"
-      },
-      "fieldConfig": {
-        "defaults": {},
-        "overrides": []
-      },
-      "gridPos": {
-        "h": 15,
-        "w": 24,
-        "x": 0,
-        "y": 32
-      },
-      "id": 105,
-      "options": {
-        "dedupStrategy": "none",
-        "enableInfiniteScrolling": true,
-        "enableLogDetails": true,
-        "prettifyLogMessage": true,
-        "showCommonLabels": false,
-        "showLabels": false,
-        "showTime": false,
-        "sortOrder": "Descending",
-        "wrapLogMessage": false
-      },
-      "pluginVersion": "11.6.5",
-      "targets": [
-        {
-          "datasource": {
-            "type": "loki",
-            "uid": "loki"
-          },
-          "direction": "backward",
-          "editorMode": "code",
-          "expr": "{service_name=\"latr\"}",
-          "queryType": "range",
-          "refId": "A"
-        }
-      ],
-      "title": "latr logs",
-      "type": "logs"
     },
     {
       "datasource": {
         "type": "tempo",
         "uid": "tempo"
       },
+      "description": "Traces containing at least one span with an error status — failed rotations, Vault errors, Linode API failures, etc.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "thresholds"
+          },
+          "custom": {
+            "align": "auto",
+            "cellOptions": {
+              "type": "auto"
+            },
+            "inspect": false
+          },
+          "mappings": [],
+          "thresholds": {
+            "mode": "absolute",
+            "steps": [
+              {
+                "color": "red"
+              }
+            ]
+          }
+        },
+        "overrides": [
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Trace ID"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 280
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View trace",
+                    "url": "/explore?orgId=1&left={\"datasource\":\"tempo\",\"queries\":[{\"refId\":\"A\",\"datasource\":{\"type\":\"tempo\",\"uid\":\"tempo\"},\"queryType\":\"traceql\",\"query\":\"${__value.raw}\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Start time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Name"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 180
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Duration"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Service"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
+              }
+            ]
+          }
+        ]
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 24,
+        "x": 0,
+        "y": 32
+      },
+      "id": 109,
+      "options": {
+        "cellHeight": "sm",
+        "footer": {
+          "countRows": false,
+          "fields": "",
+          "reducer": [
+            "sum"
+          ],
+          "show": false
+        },
+        "showHeader": true,
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Start time"
+          }
+        ]
+      },
+      "pluginVersion": "11.6.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "tempo",
+            "uid": "tempo"
+          },
+          "filters": [
+            {
+              "id": "service-name",
+              "operator": "=",
+              "scope": "resource",
+              "tag": "service.name",
+              "value": [
+                "latr"
+              ],
+              "valueType": "string"
+            }
+          ],
+          "limit": 20,
+          "metricsQueryType": "range",
+          "query": "{resource.service.name=\"latr\" && status=error}",
+          "queryType": "traceql",
+          "refId": "A",
+          "spss": 20,
+          "tableType": "traces"
+        }
+      ],
+      "title": "Error Traces",
+      "type": "table"
+    },
+    {
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "description": "Distribution of rotation durations over time. Darker cells = more rotations at that duration. Helps spot latency outliers.",
+      "fieldConfig": {
+        "defaults": {
+          "color": {
+            "mode": "scheme",
+            "schemeConfig": {
+              "name": "Oranges",
+              "steps": 128
+            }
+          },
+          "custom": {
+            "hideFrom": {
+              "legend": false,
+              "tooltip": false,
+              "viz": false
+            },
+            "scaleDistribution": {
+              "type": "linear"
+            }
+          }
+        },
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 10,
+        "w": 12,
+        "x": 0,
+        "y": 42
+      },
+      "id": 110,
+      "options": {
+        "calculate": false,
+        "cellGap": 1,
+        "cellRadius": 2,
+        "color": {
+          "exponent": 0.5,
+          "fill": "dark-orange",
+          "mode": "scheme",
+          "reverse": false,
+          "scale": "exponential",
+          "scheme": "Oranges",
+          "steps": 128
+        },
+        "exemplars": {
+          "color": "rgba(255,0,255,0.7)"
+        },
+        "filterValues": {
+          "le": 1e-9
+        },
+        "legend": {
+          "show": false
+        },
+        "rowsFrame": {
+          "layout": "auto"
+        },
+        "tooltip": {
+          "mode": "single",
+          "showColorScale": false,
+          "yHistogram": true
+        },
+        "yAxis": {
+          "axisPlacement": "left",
+          "decimals": 2,
+          "reverse": false,
+          "unit": "s"
+        }
+      },
+      "pluginVersion": "11.6.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "prometheus",
+            "uid": "prometheus"
+          },
+          "editorMode": "code",
+          "expr": "increase(latr_rotation_duration_seconds_bucket[5m])",
+          "format": "heatmap",
+          "legendFormat": "{{le}}",
+          "range": true,
+          "refId": "A"
+        }
+      ],
+      "title": "Rotation Duration Distribution",
+      "type": "heatmap"
+    },
+    {
+      "datasource": {
+        "type": "tempo",
+        "uid": "tempo"
+      },
+      "description": "All traces from latr with span-level attributes. Click a Trace ID to view the full trace in Explore.",
       "fieldConfig": {
         "defaults": {
           "color": {
@@ -902,12 +1105,33 @@
           {
             "matcher": {
               "id": "byName",
-              "options": "Service"
+              "options": "Trace ID"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 81
+                "value": 280
+              },
+              {
+                "id": "links",
+                "value": [
+                  {
+                    "title": "View trace",
+                    "url": "/explore?orgId=1&left={\"datasource\":\"tempo\",\"queries\":[{\"refId\":\"A\",\"datasource\":{\"type\":\"tempo\",\"uid\":\"tempo\"},\"queryType\":\"traceql\",\"query\":\"${__value.raw}\"}],\"range\":{\"from\":\"now-1h\",\"to\":\"now\"}}"
+                  }
+                ]
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Start time"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 170
               }
             ]
           },
@@ -919,29 +1143,41 @@
             "properties": [
               {
                 "id": "custom.width",
-                "value": 198
+                "value": 180
               }
             ]
           },
           {
             "matcher": {
               "id": "byName",
-              "options": "Trace ID"
+              "options": "Duration"
             },
             "properties": [
               {
                 "id": "custom.width",
-                "value": 320
+                "value": 90
+              }
+            ]
+          },
+          {
+            "matcher": {
+              "id": "byName",
+              "options": "Service"
+            },
+            "properties": [
+              {
+                "id": "custom.width",
+                "value": 60
               }
             ]
           }
         ]
       },
       "gridPos": {
-        "h": 21,
+        "h": 10,
         "w": 12,
-        "x": 0,
-        "y": 47
+        "x": 12,
+        "y": 42
       },
       "id": 106,
       "options": {
@@ -955,7 +1191,12 @@
           "show": false
         },
         "showHeader": true,
-        "sortBy": []
+        "sortBy": [
+          {
+            "desc": true,
+            "displayName": "Start time"
+          }
+        ]
       },
       "pluginVersion": "11.6.5",
       "targets": [
@@ -965,11 +1206,6 @@
             "uid": "tempo"
           },
           "filters": [
-            {
-              "id": "158eaede",
-              "operator": "=",
-              "scope": "span"
-            },
             {
               "id": "service-name",
               "operator": "=",
@@ -990,8 +1226,66 @@
           "tableType": "traces"
         }
       ],
-      "title": "latr traces",
+      "title": "All Traces",
       "type": "table"
+    },
+    {
+      "collapsed": false,
+      "gridPos": {
+        "h": 1,
+        "w": 24,
+        "x": 0,
+        "y": 52
+      },
+      "id": 111,
+      "panels": [],
+      "title": "Logs",
+      "type": "row"
+    },
+    {
+      "datasource": {
+        "type": "loki",
+        "uid": "loki"
+      },
+      "description": "Structured logs from latr. Click the TraceID link on any log line to jump to the corresponding trace.",
+      "fieldConfig": {
+        "defaults": {},
+        "overrides": []
+      },
+      "gridPos": {
+        "h": 18,
+        "w": 24,
+        "x": 0,
+        "y": 53
+      },
+      "id": 105,
+      "options": {
+        "dedupStrategy": "none",
+        "enableInfiniteScrolling": true,
+        "enableLogDetails": true,
+        "prettifyLogMessage": true,
+        "showCommonLabels": false,
+        "showLabels": false,
+        "showTime": true,
+        "sortOrder": "Descending",
+        "wrapLogMessage": false
+      },
+      "pluginVersion": "11.6.5",
+      "targets": [
+        {
+          "datasource": {
+            "type": "loki",
+            "uid": "loki"
+          },
+          "direction": "backward",
+          "editorMode": "code",
+          "expr": "{service_name=\"latr\"}",
+          "queryType": "range",
+          "refId": "A"
+        }
+      ],
+      "title": "latr logs",
+      "type": "logs"
     }
   ],
   "preload": false,
@@ -1006,12 +1300,12 @@
     "list": []
   },
   "time": {
-    "from": "now-30m",
+    "from": "now-1h",
     "to": "now"
   },
   "timepicker": {},
   "timezone": "browser",
   "title": "latr - Token Rotator",
-  "uid": "afe6c1m7834zkc",
-  "version": 10
+  "uid": "afe6c1m7834zkz",
+  "version": 1
 }

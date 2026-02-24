@@ -26,13 +26,13 @@
 Vault data is stored in the `vault-data` Docker volume. Your secrets survive `docker compose down` and `docker compose up`. Observability data is stored in `prometheus-data`, `loki-data`, `tempo-data`, and `grafana-data` volumes. To fully reset:
 
 ```bash
-docker compose down -v   # -v removes the vault-data and latr-config volumes
-rm -rf vault-creds       # remove saved unseal keys and creds
+➜ docker compose down -v   # -v removes the vault-data and latr-config volumes
+➜ rm -rf vault-creds       # remove saved unseal keys and creds
 ```
 
 ## Picking up changes to `latr-configs/*`
 
 The configs need to be rendered by `vault-init`, so after modifying/creating/deleting anything in `latr-configs/*`, you'll need re-run `vault-init` and start `latr` with the updated configs.
 ```bash
-docker compose rm -sf vault-init latr && docker compose up -d
+➜ docker compose rm -sf vault-init latr && docker compose up -d
 ```

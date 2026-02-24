@@ -46,30 +46,30 @@ Config files for the optional observability stack. See [docs/observability.md](d
 
 ```bash
 # 1. Create required directories
-mkdir -p vault-creds
+➜ mkdir -p vault-creds
 
 # 2. Create your config(s) in latr-configs/ (OPTIONAL)
 #    Each file gets its own Vault AppRole and Linode token.
 #    Use latr-configs/primary.yaml as a starting point.
-cp latr-configs/primary.yaml latr-configs/myaccount.yaml
+➜ cp latr-configs/primary.yaml latr-configs/myaccount.yaml
 # Edit myaccount.yaml with your token definitions
 
 # 3. Create .env with a LINODE_TOKEN_<NAME> for each config
 #    <NAME> = filename without .yaml, UPPERCASED, hyphens → underscores
-cp .env.example .env
+➜ cp .env.example .env
 # Edit .env with your actual Linode API tokens
 
 # 4. Bring everything up
-docker compose up -d
+➜ docker compose up -d
 
 # 5. (Optional) Include the observability stack
-docker compose --profile observability up -d
+➜ docker compose --profile observability up -d
 
 # 6. Check that vault-init completed successfully
-docker compose logs vault-init
+➜ docker compose logs vault-init
 
 # 7. Verify latr is running (one process per config)
-docker compose logs -f latr
+➜ docker compose logs -f latr
 ```
 For more on what happens under the hood, see [docs/how-it-works.md](docs/how-it-works.md).
 
@@ -103,3 +103,4 @@ To remove an account: delete the config file, remove the token from `.env`, and 
 - [How It Works](docs/how-it-works.md) — startup sequence, Vault access, persistence, config changes
 - [Observability](docs/observability.md) — OTel Collector, Prometheus, Loki, Tempo, Grafana
 - [revoke-tokens.py](docs/revoke-tokens.md) — utility script for testing token rotation
+- [Troubleshooting](docs/troubleshooting.md) - Common issues and how to resolve them

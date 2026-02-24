@@ -28,10 +28,10 @@ I've already fixed this (4h -> 1y), but if for some reason someone (probably me)
 After bumping those, you'll just need to re-init & restart `Vault` and `latr`:
 ```bash
 # defaults
-docker compose rm -sf vault-init latr && docker compose up -d
+➜ docker compose rm -sf vault-init latr && docker compose up -d
 
 # with observability stack
-docker compose rm -sf vault-init latr && docker compose --profile observability up -d
+➜ docker compose rm -sf vault-init latr && docker compose --profile observability up -d
 ```
 
 ## Invalid Scopes
@@ -63,20 +63,20 @@ Sometimes you do weird stuff and get yourself into an absolute mess, it happens.
 
 ```bash
 # 1. Stop and remove all containers (including the Observability stack)
-docker compose --profile observability down -v
+➜ docker compose --profile observability down -v
 
 # 2. Remove the locally built latr image
-docker rmi latr-docker-latr 2>/dev/null
+➜ docker rmi latr-docker-latr 2>/dev/null
 
 # 3. Remove generated credentials
-rm -rf vault-creds && mkdir -p vault-creds
+➜ rm -rf vault-creds && mkdir -p vault-creds
 
 # 4. Reset local repo to upstream main (optional, but recommended)
-git fetch origin && git reset --hard origin/main
+➜ git fetch origin && git reset --hard origin/main
 
 # 5. Re-build the image + containers
 # Base install (Vault, vault-init, latr)
-docker compose up -d --build
+➜ docker compose up -d --build
 # Base + Observability (OTel, Prometheus, Loki, Tempo, Grafana)
-docker compose --profile observability up -d --build
+➜ docker compose --profile observability up -d --build
 ```
