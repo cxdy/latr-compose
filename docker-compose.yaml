@@ -1,0 +1,346 @@
+x-logging: &default-logging
+  driver: json-file
+  options:
+    labels: "service_name"
+
+services:
+  vault:
+    image: hashicorp/vault:latest
+    container_name: vault
+    restart: unless-stopped
+    labels:
+      service_name: "vault"
+    logging: *default-logging
+    cap_add:
+      - IPC_LOCK
+    ports:
+      - "8200:8200"
+    environment:
+      VAULT_ADDR: "http://127.0.0.1:8200"
+    volumes:
+      - vault-data:/vault/data
+      - ./vault-config.hcl:/vault/config/vault.hcl:ro
+    # Fix volume permissions on first run, then start Vault
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        chown -R vault:vault /vault/data
+        su-exec vault vault server -config=/vault/config/vault.hcl
+    healthcheck:
+      test: ["CMD", "sh", "-c", "vault status -format=json 2>&1 || true"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 5s
+
+  vault-init:
+    image: hashicorp/vault:latest
+    container_name: vault-init
+    labels:
+      service_name: "vault-init"
+    logging: *default-logging
+    depends_on:
+      vault:
+        condition: service_healthy
+    restart: "no"
+    environment:
+      VAULT_ADDR: "http://vault:8200"
+      BOOTSTRAP_LINODE_TOKEN: "${LINODE_TOKEN:-}"
+    volumes:
+      - ./vault-creds:/vault-creds
+      - ./config.yaml:/config/config.yaml:ro
+      - latr-config:/config/rendered
+    entrypoint: /bin/sh
+    command:
+      - -c
+      - |
+        set -e
+        apk add --no-cache jq > /dev/null 2>&1
+
+        INIT_FILE="/vault-creds/vault-init.json"
+        CREDS_FILE="/vault-creds/latr.env"
+
+        # -------------------------------------------------------
+        #  First run: initialize Vault and persist unseal keys
+        # -------------------------------------------------------
+        if ! vault status -format=json 2>/dev/null | grep -q '"initialized": true'; then
+          echo "==> Vault not initialized. Initializing..."
+          vault operator init -key-shares=1 -key-threshold=1 -format=json > "$$INIT_FILE"
+          echo "==> Init output saved to $$INIT_FILE"
+        else
+          echo "==> Vault already initialized."
+        fi
+
+        # -------------------------------------------------------
+        #  Unseal if sealed
+        # -------------------------------------------------------
+        if vault status -format=json 2>/dev/null | grep -q '"sealed": true'; then
+          echo "==> Unsealing Vault..."
+          UNSEAL_KEY=$$(jq -r '.unseal_keys_b64[0]' "$$INIT_FILE")
+          vault operator unseal "$$UNSEAL_KEY" > /dev/null
+          echo "==> Vault unsealed."
+        else
+          echo "==> Vault already unsealed."
+        fi
+
+        # -------------------------------------------------------
+        #  Authenticate with root token
+        # -------------------------------------------------------
+        ROOT_TOKEN=$$(jq -r '.root_token' "$$INIT_FILE")
+        export VAULT_TOKEN="$$ROOT_TOKEN"
+
+        # -------------------------------------------------------
+        #  Configure secrets engine, policy, and AppRole
+        #  (idempotent — skips steps already done)
+        # -------------------------------------------------------
+
+        # Enable KV v2 at infra/
+        if ! vault secrets list -format=json | grep -q '"infra/"'; then
+          echo "==> Enabling KV v2 secrets engine at infra/"
+          vault secrets enable -path=infra kv-v2
+        else
+          echo "==> Secrets engine infra/ already enabled."
+        fi
+
+        # Write policy (always overwrite to pick up changes)
+        echo "==> Writing latr-policy"
+        vault policy write latr-policy - <<'EOF'
+        path "infra/*" {
+          capabilities = ["create", "read", "update", "patch", "delete", "list"]
+        }
+        path "infra/data/*" {
+          capabilities = ["create", "read", "update", "patch", "delete", "list"]
+        }
+        path "infra/metadata/*" {
+          capabilities = ["create", "read", "update", "patch", "delete", "list"]
+        }
+        path "infra/delete/*" {
+          capabilities = ["create", "update"]
+        }
+        path "infra/undelete/*" {
+          capabilities = ["create", "update"]
+        }
+        path "infra/destroy/*" {
+          capabilities = ["create", "update"]
+        }
+        EOF
+
+        # Enable AppRole auth
+        if ! vault auth list -format=json | grep -q '"approle/"'; then
+          echo "==> Enabling AppRole auth method"
+          vault auth enable approle
+        else
+          echo "==> AppRole auth already enabled."
+        fi
+
+        # Create/update the latr role
+        echo "==> Configuring latr AppRole"
+        vault write auth/approle/role/latr \
+          token_policies="latr-policy" \
+          token_ttl=1h \
+          token_max_ttl=4h \
+          secret_id_ttl=0
+
+        # -------------------------------------------------------
+        #  Fetch Role ID (stable) and generate Secret ID
+        # -------------------------------------------------------
+        ROLE_ID=$$(vault read -field=role_id auth/approle/role/latr/role-id)
+        SECRET_ID=$$(vault write -field=secret_id -f auth/approle/role/latr/secret-id)
+
+        printf "VAULT_ROLE_ID=%s\nVAULT_SECRET_ID=%s\n" "$$ROLE_ID" "$$SECRET_ID" > "$$CREDS_FILE"
+
+        # Write LINODE_TOKEN to a file latr can consume
+        printf "LINODE_TOKEN=%s\n" "$$BOOTSTRAP_LINODE_TOKEN" > /vault-creds/linode.env
+
+        # -------------------------------------------------------
+        #  Template the latr config with actual credentials
+        # -------------------------------------------------------
+        echo "==> Rendering latr config with AppRole credentials"
+        sed -e "s|\$${VAULT_ROLE_ID}|$$ROLE_ID|g" \
+            -e "s|\$${VAULT_SECRET_ID}|$$SECRET_ID|g" \
+            /config/config.yaml > /config/rendered/config.yaml
+
+        echo ""
+        echo "============================================"
+        echo " Vault initialization complete!"
+        echo "============================================"
+        echo " Root Token:   $$ROOT_TOKEN"
+        echo " Vault UI:     http://localhost:8200"
+        echo " Role ID:      $$ROLE_ID"
+        echo " Secret ID:    $$SECRET_ID"
+        echo "============================================"
+
+  latr:
+    build:
+      context: .
+      dockerfile: Dockerfile.latr
+    container_name: latr
+    restart: unless-stopped
+    labels:
+      service_name: "latr"
+    logging: *default-logging
+    depends_on:
+      vault-init:
+        condition: service_completed_successfully
+      otel-collector:
+        condition: service_started
+        required: false
+    volumes:
+      - latr-config:/config:ro
+      - ./vault-creds:/vault-creds:ro
+    entrypoint: ["/bin/sh", "-c"]
+    command:
+      - |
+        . /vault-creds/linode.env
+        export LINODE_TOKEN
+        exec /usr/local/bin/latr -config /config/config.yaml
+
+  # -----------------------------------------------------------
+  #  Observability Stack (opt-in via --profile observability)
+  # -----------------------------------------------------------
+
+  otel-collector:
+    image: otel/opentelemetry-collector-contrib:latest
+    container_name: otel-collector
+    restart: unless-stopped
+    profiles: ["observability"]
+    user: "0:0"  # Root required to read Docker container log files
+    labels:
+      service_name: "otel-collector"
+    logging: *default-logging
+    volumes:
+      - ./observability/otel-collector.yaml:/etc/otelcol-contrib/config.yaml:ro
+      - /var/lib/docker/containers:/var/lib/docker/containers:ro
+    ports:
+      - "4317:4317"   # OTLP gRPC
+    depends_on:
+      - tempo
+      - loki
+
+  prometheus:
+    image: prom/prometheus:latest
+    container_name: prometheus
+    restart: unless-stopped
+    profiles: ["observability"]
+    labels:
+      service_name: "prometheus"
+    logging: *default-logging
+    volumes:
+      - ./observability/prometheus.yaml:/etc/prometheus/prometheus.yml:ro
+      - prometheus-data:/prometheus
+    ports:
+      - "9090:9090"
+    command:
+      - --config.file=/etc/prometheus/prometheus.yml
+      - --storage.tsdb.path=/prometheus
+      - --web.enable-remote-write-receiver
+
+  loki:
+    image: grafana/loki:latest
+    container_name: loki
+    restart: unless-stopped
+    profiles: ["observability"]
+    labels:
+      service_name: "loki"
+    logging: *default-logging
+    volumes:
+      - ./observability/loki.yaml:/etc/loki/config.yaml:ro
+      - loki-data:/loki
+    ports:
+      - "3100:3100"
+    command: -config.file=/etc/loki/config.yaml
+
+  tempo:
+    image: grafana/tempo:2.7.2
+    container_name: tempo
+    restart: unless-stopped
+    profiles: ["observability"]
+    labels:
+      service_name: "tempo"
+    logging: *default-logging
+    volumes:
+      - ./observability/tempo.yaml:/etc/tempo/config.yaml:ro
+      - tempo-data:/var/tempo
+    ports:
+      - "3200:3200"   # Tempo HTTP
+    command: -config.file=/etc/tempo/config.yaml
+
+  grafana:
+    image: grafana/grafana:latest
+    container_name: grafana
+    restart: unless-stopped
+    profiles: ["observability"]
+    labels:
+      service_name: "grafana"
+    logging: *default-logging
+    environment:
+      GF_SECURITY_ADMIN_USER: admin
+      GF_SECURITY_ADMIN_PASSWORD: password
+      GF_AUTH_ANONYMOUS_ENABLED: "true"
+      GF_AUTH_ANONYMOUS_ORG_ROLE: Viewer
+    volumes:
+      - ./observability/grafana/provisioning:/etc/grafana/provisioning:ro
+      - grafana-data:/var/lib/grafana
+    ports:
+      - "3000:3000"
+    healthcheck:
+      test: ["CMD-SHELL", "wget -qO /dev/null http://localhost:3000/api/health || exit 1"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+      start_period: 10s
+    depends_on:
+      - prometheus
+      - loki
+      - tempo
+
+  grafana-init:
+    image: curlimages/curl:latest
+    container_name: grafana-init
+    profiles: ["observability"]
+    depends_on:
+      grafana:
+        condition: service_healthy
+    restart: "no"
+    labels:
+      service_name: "grafana-init"
+    logging: *default-logging
+    volumes:
+      - ./observability/grafana/dashboards:/dashboards:ro
+    entrypoint: ["sh", "-c"]
+    command:
+      - |
+        # Skip if the dashboard already exists
+        if curl -sf -o /dev/null http://grafana:3000/api/dashboards/uid/afe6c1m7834zkc \
+             -u admin:password; then
+          echo "==> Dashboard already exists, skipping import"
+          exit 0
+        fi
+
+        # Create the latr folder (ignore error if it already exists)
+        curl -sf -X POST http://grafana:3000/api/folders \
+          -H 'Content-Type: application/json' \
+          -u admin:password \
+          -d '{"uid":"latr","title":"latr"}' || true
+
+        # Import the dashboard (fully editable, not provisioned)
+        # Null the first "id" (the top-level dashboard id) so Grafana creates a
+        # new dashboard instead of trying to update a non-existent one.
+        awk '!done && /"id": *[0-9]/ { sub(/"id": *[0-9]+/, "\"id\": null"); done=1 } 1' /dashboards/latr.json > /tmp/dash.json
+        { echo '{"dashboard":'; cat /tmp/dash.json; echo ',"folderUid":"latr","overwrite":true}'; } > /tmp/payload.json
+        curl -sf -X POST http://grafana:3000/api/dashboards/db \
+          -H 'Content-Type: application/json' \
+          -u admin:password \
+          -d @/tmp/payload.json
+
+        echo ""
+        echo "==> Dashboard imported successfully"
+
+volumes:
+  vault-data:
+  latr-config:
+  prometheus-data:
+  loki-data:
+  tempo-data:
+  grafana-data:

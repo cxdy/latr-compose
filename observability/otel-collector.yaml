@@ -1,0 +1,121 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+
+  # Collect Docker container logs (stdout/stderr) from the JSON file log driver
+  filelog/docker:
+    include:
+      - /var/lib/docker/containers/*/*.log
+    include_file_path: true
+    include_file_name: false
+    operators:
+      # 0. Extract service_name from Docker's "attrs" label (non-destructive)
+      - type: regex_parser
+        id: extract_service_name
+        if: 'body matches "attrs"'
+        parse_from: body
+        preserve_to: body
+        regex: '"attrs"\s*:\s*\{[^}]*"service_name"\s*:\s*"(?P<_service_name>[^"]+)"'
+      - type: move
+        id: set_service_name
+        if: 'attributes._service_name != nil'
+        from: attributes._service_name
+        to: resource["service.name"]
+
+      # 1. Parse Docker's JSON log wrapper: {"log":"...","stream":"...","time":"..."}
+      - type: json_parser
+        timestamp:
+          parse_from: attributes.time
+          layout_type: gotime
+          layout: '2006-01-02T15:04:05.999999999Z'
+
+      # 2. Promote the actual log line to body
+      - type: move
+        from: attributes.log
+        to: body
+
+      # 3. Categorize stdout vs stderr
+      - type: move
+        from: attributes.stream
+        to: attributes["log.iostream"]
+
+      # 4. Clean up consumed Docker timestamp attribute
+      - type: remove
+        field: attributes.time
+
+      # 5. Extract container ID from the Docker log file path
+      - type: regex_parser
+        parse_from: attributes["log.file.path"]
+        regex: '.*/containers/(?P<container_id>[a-f0-9]+)/.*'
+      - type: move
+        from: attributes.container_id
+        to: resource["container.id"]
+
+      # 6. Preserve the raw log line (restored in step 10)
+      - type: copy
+        from: body
+        to: attributes._raw
+
+      # 7. For structured (JSON) logs, parse fields into attributes
+      - type: json_parser
+        id: structured_body
+        if: 'body matches "^\\{"'
+
+      # 8. Parse severity from the "level" field (e.g. "info", "error")
+      - type: severity_parser
+        if: 'attributes.level != nil'
+        parse_from: attributes.level
+
+      # 9. Link logs ↔ traces via trace_id / span_id
+      - type: trace_parser
+        if: 'attributes.trace_id != nil'
+        trace_id:
+          parse_from: attributes.trace_id
+        span_id:
+          parse_from: attributes.span_id
+
+      # 10. Restore the original log line so Loki stores the full text
+      - type: move
+        from: attributes._raw
+        to: body
+
+exporters:
+  # Expose metrics as a Prometheus scrape target
+  prometheus:
+    endpoint: 0.0.0.0:8889
+    resource_to_telemetry_conversion:
+      enabled: true
+
+  # Send traces to Tempo via OTLP
+  otlp_grpc/tempo:
+    endpoint: tempo:4317
+    tls:
+      insecure: true
+
+  # Send logs to Loki via OTLP (Loki 3.x native OTLP support)
+  otlp_http/loki:
+    endpoint: http://loki:3100/otlp
+    tls:
+      insecure: true
+
+processors:
+  batch:
+    timeout: 5s
+    send_batch_size: 1024
+
+service:
+  pipelines:
+    metrics:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [prometheus]
+    traces:
+      receivers: [otlp]
+      processors: [batch]
+      exporters: [otlp_grpc/tempo]
+    logs:
+      receivers: [otlp, filelog/docker]
+      processors: [batch]
+      exporters: [otlp_http/loki]

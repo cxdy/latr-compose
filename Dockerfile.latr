@@ -1,0 +1,4 @@
+FROM ghcr.io/wbh1/latr:latest AS latr
+FROM alpine:latest
+COPY --from=latr /usr/local/bin/latr /usr/local/bin/latr
+USER nobody:nobody
